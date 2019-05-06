@@ -188,6 +188,7 @@ collection of small words.  I'll have to revisit that in the future.
 [colorForth]: https://web.archive.org/web/20160128005226/http://www.colorforth.com/inst.htm
 [fc]: https://github.com/brendanzagaeski/0000/blob/master/fc.html
 [fi]: https://github.com/brendanzagaeski/0000/blob/master/fi.html
+[second-commit]: https://github.com/brendanzagaeski/0000/commit/0bdab6d0af4910b1cb96fefc8b1b3601f32c8d76
 [mono-interpreter]: https://www.mono-project.com/news/2017/11/13/mono-interpreter/
 [turing]: https://doi.org/10.1112%2Fplms%2Fs2-42.1.230
 [annotated-turing]: https://lccn.loc.gov/2008022829
