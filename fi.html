@@ -1,0 +1,1185 @@
+<html><head></head><body><script>`use strict`;
+
+///////////////////////////
+// String helper methods //
+///////////////////////////
+
+String.prototype.getUint32 = (function (i)
+{
+  return this.charCodeAt (i) ^
+    this.charCodeAt (i + 1) << 0x08 ^
+    this.charCodeAt (i + 2) << 0x10 ^
+    this.charCodeAt (i + 3) << 0x18;
+});
+
+String.fromUint32 = (function (x)
+{
+  return String.prototype.concat (
+    String.fromCharCode (x & 0xFF),
+    String.fromCharCode ((x >> 0x08) & 0xFF),
+    String.fromCharCode ((x >> 0x10) & 0xFF),
+    String.fromCharCode ((x >> 0x18) & 0xFF)
+  );
+});
+
+String.prototype.h = (function (ii)
+{
+  return String.prototype.concat (
+    `0x`,
+    this.charCodeAt (ii * 4 + 3).toString (0x10).padStart (2, `0`),
+    this.charCodeAt (ii * 4 + 2).toString (0x10).padStart (2, `0`),
+    this.charCodeAt (ii * 4 + 1).toString (0x10).padStart (2, `0`),
+    this.charCodeAt (ii * 4).toString (0x10).padStart (2, `0`),
+    `     `
+  );
+});
+
+///////////////////////////////////
+// ELF header and program header //
+///////////////////////////////////
+
+// https://refspecs.linuxfoundation.org/elf/gabi4+/contents.html
+
+// let Elf64_Addr   = 8;
+// let Elf64_Off    = 8;
+// let Elf64_Half   = 2;
+// let Elf64_Word   = 4;
+// let Elf64_Xword  = 8;
+// let EI_NIDENT    = 0x10;
+
+// Elf64_Ehdr
+
+let p = String.prototype.concat (
+  `\x7F`,                             // e_ident[ELFMAG0]
+  `E`,                                // e_ident[ELFMAG1]
+  `L`,                                // e_ident[ELFMAG2]
+  `F`,                                // e_ident[ELFMAG3]
+  `\x02`,                             // e_ident[EI_CLASS] is ELFCLASS64
+  `\x01`,                             // e_ident[EI_DATA] is ELFDATA2LSB
+  `\x01`,                             // e_ident[EI_VERSION] is EV_CURRENT
+  `\x00`,                             // e_ident[EI_OSABI] is ELFOSABI_NONE
+  `\x00`,                             // e_ident[EI_ABIVERSION] is *unspecified*
+  `\x00`.repeat (7),                  // e_ent[EI_PAD] through e_ident[EI_NIDENT - 1] are all 0
+  `\x02\x00`,                         // Elf64_Half e_type is ET_EXEC (executable file)
+  `\x3E\x00`,                         // Elf64_Half e_machine is EM_X86_64
+  `\x01\x00\x00\x00`,                 // Elf64_Word e_version is EV_CURRENT
+  `\x00\x10\x40\x00\x00\x00\x00\x00`, // Elf64_Addr e_entry is at virtual memory address 0x401000
+  `\x40\x00\x00\x00\x00\x00\x00\x00`, // Elf64_Off  e_phoff is directly after this ELF header
+  `\x00`.repeat (8),                  // Elf64_Off  e_shoff is 0: No section header table
+  `\x00`.repeat (4),                  // Elf64_Word e_flags
+  `\x40\x00`,                         // Elf64_Half e_ehsize: The ELF header is 0x40 bytes
+  `\x38\x00`,                         // Elf64_Half e_phentsize: Program headers are 0x38 bytes
+  `\x01\x00`,                         // Elf64_Half e_phnum: One program header
+  `\x00\x00`,                         // Elf64_Half e_shentsize
+  `\x00\x00`,                         // Elf64_Half e_shnum
+  `\x00\x00`,                         // Elf64_Half e_shstrndx is SHN_UNDEF
+
+// Elf64_Phdr
+
+  `\x01\x00\x00\x00`,                 // Elf64_Word p_type is PT_LOAD
+  `\x07\x00\x00\x00`,                 // Elf64_Word p_flags is PF_X ^ PF_W ^ PF_R === 1 ^ 2 ^ 4
+  `\x00`.repeat (8),                  // Elf64_Off p_offset is 0, at the beginning of the file
+  `\x00\x00\x40\x00\x00\x00\x00\x00`, // Elf64_Addr p_vaddr is at 0x400000 to follow conventional segment arrangement
+  `\x00`.repeat (8),                  // Elf64_Addr p_paddr (System V ignores this)
+  `\x00\xA0\x00\x00\x00\x00\x00\x00`, // Elf64_Xword p_filesz is 0xA pages
+  `\x00\x00\x02\x00\x00\x00\x00\x00`, // Elf64_Xword p_memsz is 0x20 pages
+  `\x00\x10\x00\x00\x00\x00\x00\x00`  // Elf64_Xword p_align is 0x1000
+);
+
+////////////////////////////////////////////
+// Intel 64 instruction names and helpers //
+////////////////////////////////////////////
+
+// https://software.intel.com/download/intel-64-and-ia-32-architectures-sdm-combined-volumes-2a-2b-2c-and-2d-instruction-set-reference-a-z
+
+let ADD_FTCH_0x03   = `\x03`;
+let AND_FTCH_0x23   = `\x23`;
+let XOR_FTCH_0x33   = `\x33`;
+let JZ_0x74_0xXX    = `\x74`;
+let JNZ_0x75_0xXX   = `\x75`;
+let MOV_STOR_0x89   = `\x89`;
+let MOV_FTCH_0x8B   = `\x8B`;
+let POP_0x8F_0      = `\x8F`;
+let MOV_IMMD_0xC7_0 = `\xC7`;
+let SHL_0xD1_4      = `\xD1`;
+let SHR_0xD1_5      = `\xD1`;
+let JMP_0xFF_4      = `\xFF`;
+let PUSH_0xFF_6     = `\xFF`;
+
+let REG_0b11 = 0b11;
+let MEM_0b00 = 0b00;
+
+let modRM = (function (mod, reg, rm)
+{
+  return String.fromCharCode (mod << 6 ^ reg << 3 ^ rm);
+});
+
+///////////////////////////////////////
+// Runtime setup for Forth-like code //
+///////////////////////////////////////
+
+p = p.concat (
+  // e_entry is at byte address 0x1000 in the file
+  `\x00`.repeat (0x1000 - p.length),
+
+  // Initialize register 1 to a constant value of positive 4
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b001), `\x04\x00\x00\x00`,
+  // Initialize register 3 to a constant value of negative 4
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b011), `\xFC\xFF\xFF\xFF`,
+  // Initialize the stack pointer
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b110), `\x00\x00\x42\x00`,
+  // Jump to the compiler
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b111), `\x00\x20\x40\x00`,
+  JMP_0xFF_4     , modRM (REG_0b11,     4, 0b111)
+);
+
+///////////////////////////////////////////////////////////////////////////////
+// Instructions to dump the stack to standard output at the end of execution //
+///////////////////////////////////////////////////////////////////////////////
+
+// System calling conventions:
+// https://github.com/hjl-tools/x86-psABI/blob/5f35093b24b17fed14ab99eea8fe162f6212e28b/kernel.tex#L25-L45
+//
+// System call numbers:
+// https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl
+
+p = p.concat (
+  `\x00`.repeat (0x1100 - p.length),
+
+  // Do a `dup` to copy the top of the stack into memory
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b011),
+  MOV_STOR_0x89  , modRM (MEM_0b00, 0b111, 0b110),
+  // Move the stack pointer down once more so that the loop will write out the
+  // topmost value from the stack before it breaks
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b011),
+
+  // Select the `write ()` syscall
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b000), `\x01\x00\x00\x00`,
+  // Use file descriptor 1
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b111), `\x01\x00\x00\x00`,
+  // Start at the bottom of the stack, so first save the address of the top of
+  // the stack to a scratch register
+  MOV_FTCH_0x8B  , modRM (REG_0b11, 0b001, 0b110),
+  // Set the starting address to the bottom of the stack
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b110), `\xF8\xFF\x41\x00`,
+  // Set the write size to 4 bytes
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b010), `\x04\x00\x00\x00`,
+
+  // Save the address of the bottom of the stack so we can do a destructive XOR
+  // compare
+  PUSH_0xFF_6    , modRM (REG_0b11,     6, 0b001),
+  XOR_FTCH_0x33  , modRM (REG_0b11, 0b001, 0b110),
+  // If we're at the top of the stack, we're done
+  JZ_0x74_0xXX   ,                        `\x12`,
+    // Otherwise restore the address of the bottom of the stack
+    POP_0x8F_0     , modRM (REG_0b11,     0, 0b001),
+    // Re-save it because the syscall overwrites it
+    PUSH_0xFF_6    , modRM (REG_0b11,     6, 0b001),
+    // Write the current 4 bytes
+    `\x0F\x05`, // SYSCALL
+    // Restore the address of the bottom of the stack again
+    POP_0x8F_0     , modRM (REG_0b11,     0, 0b001),
+    // Decrement the current position to the next 4 bytes
+    ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b011),
+    // Re-select the `write ()` syscall
+    MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b000), `\x01\x00\x00\x00`,
+    // Loop (using a conditional jump to get relative addressing without having
+    // to introduce another JMP opcode)
+    JNZ_0x75_0xXX  ,                        `\xE8`,
+
+  // Now do the `exit ()` syscall
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b000), `\x3C\x00\x00\x00`,
+  XOR_FTCH_0x33  , modRM (REG_0b11, 0b111, 0b111),
+  `\x0F\x05` // SYSCALL
+);
+
+/////////////////////////////////////////////
+// Forth-like word definitions in Intel 64 //
+/////////////////////////////////////////////
+
+let __dup = String.prototype.concat (
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b011),
+  MOV_STOR_0x89  , modRM (MEM_0b00, 0b111, 0b110)
+);
+
+let _dup = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  __dup
+);
+
+let __drop = String.prototype.concat (
+  MOV_FTCH_0x8B  , modRM (MEM_0b00, 0b111, 0b110),
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b001)
+);
+
+let _drop = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  __drop
+);
+
+let _over = String.prototype.concat (
+  `\x0F\x1F\x84\x00\x00\x00\x00\x00`, // nop
+  MOV_FTCH_0x8B  , modRM (MEM_0b00, 0b010, 0b110),
+  __dup,
+  MOV_FTCH_0x8B  , modRM (REG_0b11, 0b111, 0b010)
+);
+
+let _push = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x0F\x1F\x40\x00`,                 // nop
+  PUSH_0xFF_6    , modRM (REG_0b11,     6, 0b111),
+  __drop
+);
+
+let _pop = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x0F\x1F\x40\x00`,                 // nop
+  __dup,
+  POP_0x8F_0     , modRM (REG_0b11,     0, 0b111)
+);
+
+let _jcc_prep = String.prototype.concat (
+  // Save the top of the stack and the second position in scratch registers
+  MOV_FTCH_0x8B  , modRM (REG_0b11, 0b010, 0b111),
+  MOV_FTCH_0x8B  , modRM (MEM_0b00, 0b000, 0b110),
+  // Drop 2 from the top of the stack
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b001),
+  MOV_FTCH_0x8B  , modRM (MEM_0b00, 0b111, 0b110),
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b001),
+  // Test the value that was saved from the second position in the stack
+  AND_FTCH_0x23  , modRM (REG_0b11, 0b000, 0b000),
+);
+
+let _jz = String.prototype.concat (
+  _jcc_prep,
+  JNZ_0x75_0xXX  ,                         `\x02`,
+  JMP_0xFF_4     , modRM (REG_0b11,     4, 0b010)
+);
+
+let _jnz = String.prototype.concat (
+  _jcc_prep,
+  JZ_0x74_0xXX   ,                         `\x02`,
+  JMP_0xFF_4     , modRM (REG_0b11,     4, 0b010)
+);
+
+let _jump = String.prototype.concat (
+  `\x0F\x1F\x84\x00\x00\x00\x00\x00`, // nop
+  MOV_FTCH_0x8B  , modRM (REG_0b11, 0b010, 0b111),
+  __drop,
+  JMP_0xFF_4     , modRM (REG_0b11,     4, 0b010)
+);
+
+let _add = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  ADD_FTCH_0x03  , modRM (MEM_0b00, 0b111, 0b110),
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b001)
+);
+
+let _shl = String.prototype.concat (
+  `\x0F\x1F\x84\x00\x00\x00\x00\x00`, // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+   SHL_0xD1_4     , modRM (REG_0b11,     4, 0b111),
+);
+
+let _shr = String.prototype.concat (
+  `\x0F\x1F\x84\x00\x00\x00\x00\x00`, // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+   SHR_0xD1_5     , modRM (REG_0b11,     5, 0b111),
+);
+
+let _or = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  XOR_FTCH_0x33  , modRM (MEM_0b00, 0b111, 0b110),
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b001)
+);
+
+let _and = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  AND_FTCH_0x23  , modRM (MEM_0b00, 0b111, 0b110),
+  ADD_FTCH_0x03  , modRM (REG_0b11, 0b110, 0b001)
+);
+
+let _ftch = String.prototype.concat (
+  `\x0F\x1F\x84\x00\x00\x00\x00\x00`, // nop
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  MOV_FTCH_0x8B  , modRM (MEM_0b00, 0b111, 0b111)
+);
+
+let _exit = String.prototype.concat (
+  `\x0F\x1F\x84\x00\x00\x00\x00\x00`, // nop
+  // Jump to the instructions at 0x401100 that dump the stack and exits
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b010), `\x00\x11\x40\x00`,
+  JMP_0xFF_4     , modRM (REG_0b11,     4, 0b010)
+);
+
+let _ftchP = String.prototype.concat (
+  `\x66\x0F\x1F\x44\x00\x00`,         // nop
+  __dup,
+  MOV_IMMD_0xC7_0, modRM (REG_0b11,     0, 0b111),
+);
+
+////////////////////////////////////////////
+// Parser and compiler in Forth-like code //
+////////////////////////////////////////////
+
+// Comments for the Forth-like code are kept in a separate section later in the
+// file so that cursor positions in the code line up with byte positions in the
+// output executable.
+
+p = p.concat (`\x00`.repeat (0x2000 - p.length),
+`0x00400000     
+0x00000064     
+0x00402050     
+0x00402100     
+jump           
+0xFFFFE000     
+add            
+dup            
+push           
+0x00400064     
+0x00001F9C     
+0x00402300     
+0x00402100     
+jump           
+
+                              
+push           
+2/             
+2/             
+0xFFFFFFFF     
+add            
+push           
+dup            
+0x00000004     
+add            
+push           
+@              
+pop            
+pop            
+dup            
+0x00402130     
+jnz            
+drop           
+drop           
+pop            
+jump           
+
+                                                                                                                                                                                              
+0x00404000     
+push           
+pop            
+dup            
+@              
+0x000000FF     
+and            
+0x00000020     
+or             
+0x00402700     
+jz             
+dup            
+@              
+0x000000FF     
+and            
+0x00000030     
+or             
+0x00402980     
+jz             
+dup            
+@              
+0x000000FF     
+and            
+0x00000022     
+or             
+0x00402530     
+jnz            
+  dup          
+  0x00000010   
+  add          
+  push         
+  0x00000010   
+  0x00402320   
+  0x00402100   
+  jump         
+dup            
+@              
+0x00402C80     
+jnz            
+0x00000010     
+add            
+push           
+0x00000000     
+0x00000000     
+0x00000000     
+0x00000000     
+pop            
+pop            
+0xFFFFC000     
+add            
+0x00402690     
+over           
+0x00402100     
+jnz            
+  drop         
+  drop         
+  drop         
+exit           
+
+                                                                                              
+0x00000010     
+0xFFFFFFFF     
+add            
+push           
+dup            
+@              
+0x000000FF     
+and            
+0x00000020     
+or             
+0x00402800     
+jz             
+  pop          
+  drop         
+  0x00402330   
+  jump         
+0x00000001     
+add            
+pop            
+dup            
+0x00402710     
+jnz            
+drop           
+push           
+0x00000000     
+0x00000000     
+0x00000000     
+0x00000000     
+pop            
+0x00402330     
+jump           
+
+                                                                                                                                              
+0x00000002     
+add            
+push           
+0x00000000     
+push           
+0x00000008     
+0xFFFFFFFF     
+add            
+pop            
+2*             
+2*             
+2*             
+2*             
+pop            
+dup            
+0x00000001     
+add            
+push           
+@              
+0x000000FF     
+and            
+dup            
+push           
+0x0000000F     
+and            
+pop            
+0x00000040     
+and            
+0x00402B80     
+jz             
+  0x00000009   
+  add          
+or             
+push           
+dup            
+0x004029E0     
+jnz            
+drop           
+${_ftchP.h (0)}
+${_ftchP.h (1)}
+${_ftchP.h (2)}
+pop            
+pop            
+0x00402330     
+jump           
+
+                                              
+push           
+0x00403001     
+pop            
+over           
+@              
+over           
+@              
+or             
+0x00402D70     
+jz             
+  push         
+  0x00000100   
+  add          
+  0x00402CA0   
+  jump         
+0x00000004     
+add            
+push           
+0x0000000F     
+add            
+jump           
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+"dup  "        
+${_dup.h (0)  }
+${_dup.h (1)  }
+${_dup.h (2)  }
+${_dup.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"drop "        
+${_drop.h (0) }
+${_drop.h (1) }
+${_drop.h (2) }
+${_drop.h (3) }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"over "        
+${_over.h (0) }
+${_over.h (1) }
+${_over.h (2) }
+${_over.h (3) }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"push "        
+${_push.h (0) }
+${_push.h (1) }
+${_push.h (2) }
+${_push.h (3) }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"pop  "        
+${_pop.h (0)  }
+${_pop.h (1)  }
+${_pop.h (2)  }
+${_pop.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"jz   "        
+${_jz.h (0)   }
+${_jz.h (1)   }
+${_jz.h (2)   }
+${_jz.h (3)   }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"jnz  "        
+${_jnz.h (0)  }
+${_jnz.h (1)  }
+${_jnz.h (2)  }
+${_jnz.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"jump "        
+${_jump.h (0) }
+${_jump.h (1) }
+${_jump.h (2) }
+${_jump.h (3) }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"add  "        
+${_add.h (0)  }
+${_add.h (1)  }
+${_add.h (2)  }
+${_add.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"2*   "        
+${_shl.h (0)  }
+${_shl.h (1)  }
+${_shl.h (2)  }
+${_shl.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"2/   "        
+${_shr.h (0)  }
+${_shr.h (1)  }
+${_shr.h (2)  }
+${_shr.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"or  "         
+${_or.h (0)   }
+${_or.h (1)   }
+${_or.h (2)   }
+${_or.h (3)   }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"and  "        
+${_and.h (0)  }
+${_and.h (1)  }
+${_and.h (2)  }
+${_and.h (3)  }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"@    "        
+${_ftch.h (0) }
+${_ftch.h (1) }
+${_ftch.h (2) }
+${_ftch.h (3) }
+0x00402320     
+jump           
+
+                                                                                                                                              
+"exit "        
+${_exit.h (0) }
+${_exit.h (1) }
+${_exit.h (2) }
+${_exit.h (3) }
+0x00402320     
+jump           
+                                                                                                                                                                                                                                                                                                                                                                                               
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00`.replace (/\x0A/g, ` `)
+);
+
+//////////////////////////////////
+// Comments for Forth-like code //
+//////////////////////////////////
+
+
+
+
+
+// Load 0x64 bytes of the ELF header onto the stack.
+
+// Use the two's complement to subtract 0x2000 from the p_filesz value.  Each round of compilation consumes a 0x2000-byte block of source code, so the file gets shorter by 0x2000 bytes each time.
+
+// Save a copy of the new p_filesz value for later.
+
+
+// Load the remainder of the ELF header, the register initialization code, and the `_exit` code block onto the stack.
+
+
+
+
+// // Load up to a specified number of bytes onto the stack, in 32-bit increments // First save the return address.
+// Divide by 4 to get the floor of the number of 32-bit values to load.
+
+// (Start of the loop)
+
+
+
+
+
+
+
+
+
+
+
+// If the loop counter is not zero, loop.
+
+
+// Restore the return address.
+
+
+
+// // Main parsing loop // First initialize the source address to point to the input program.
+
+
+
+// Fetch through the top of the stack (destructive).
+
+
+
+// Compare to 0x20 (ASCII space).
+
+// If the character is ` `, jump into reading whitespace.
+
+
+
+
+
+// Compare to 0x30 (ASCII `0`).
+
+// If the character is `0`, jump into reading a number.
+
+
+
+
+
+// Compare to 0x22 (ASCII `"`).
+
+
+  // Use the source address as the copy src address.
+
+  // Increment the source address to the next 0x10-byte block.
+
+  // Prepare to load 0x10 bytes.
+  // Set the return address for the multi-byte loader.
+
+  // Jump to the multi-byte loader.
+
+
+// If the value isn't ` `, `0`, `"`, or 0x00000000 (null),
+// then read it as a word.
+// If the value is 0x00000000, increment the source address by 0x10 bytes.
+
+
+// Load 0x10 bytes of zero onto the stack under the source address.
+
+
+
+
+// Restore the new p_filesz size.
+
+// Subtract the 0x4000 bytes that have been added so far.
+// Set the return address for the multi-byte loader.
+
+
+// If the result after subtracting 0x4000 is not zero, load that remaining number of bytes to get up to p_filesz.
+  // Otherwise drop the arguments to the multi-byte loader.
+
+
+// And then exit.
+
+
+// // Read whitespace // First initialize the loop counter to 0x10.
+// (Start of the loop)
+
+
+
+
+
+
+
+// Compare to 0x20 (ASCII space).
+
+
+
+// If the character is not 0x20, drop the loop counter.
+
+// Jump back to the main loop.
+
+// Otherwise increment the source address.
+
+
+
+// Loop if the loop counter is not 0.
+// Otherwise, drop the loop counter.
+
+// Load 0x10 bytes of zero on the stack under the source address.
+
+
+
+
+
+// Jump back to the main loop.
+
+
+// // Read a number // First skip over the `0x` prefix.
+
+// Move the source address out of the way.
+// Initialize the accumulator.
+
+// Initialize the loop counter.
+// (Start of the loop)
+// Decrement the loop counter.
+
+// Shift the accumulator left to prepare for the next nibble.
+
+
+
+
+
+
+
+// Save an incremented copy of the source address for the next iteration.
+// Fetch the next character.
+
+
+
+
+
+// Mask to the lower 4 bits of the character.
+
+
+// Get the 0x40 bit of the character.
+
+
+
+  // Add 9 to the result if the character has the 0x40 bit set.  (All the characters `A` thru `F` and `a` thru `f` have this bit set, but none of the characters `0` thru `9` do.)
+// `or` the result into the accumulator.
+
+// Make a copy of the loop counter.
+
+// If the loop counter is not zero, loop.
+// Otherwise, drop the loop counter.
+// Load the Intel 64 definition of `_ftchP`.
+
+
+// Restore the accumulator to be the input to `_ftchP`.
+// Restore the source address.
+
+
+
+
+// // Read a word //
+// Initialize the lookup table address under the source address, offset by an additional 1 to skip the `"` character.
+// (Start of loop for a non-match)
+
+// Get 4 characters at the current lookup table address.
+
+// Get 4 characters at the current source address.
+// Compare the characters from the lookup table with the ones from the source.
+
+
+  // If the characters do not match, set up to check the next word in the lookup table.
+
+  // Increment the lookup table address to the next word.
+
+  // Continue the loop.
+// (When the source characters and lookup table characters are the same)
+// Increment the source address to the first character after the word.
+
+
+// Increment the lookup table address to the start of the implementation block.
+// Jump into the implementation block.
+
+
+// // Word lookup table //
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//////////////////
+// End comments //
+//////////////////
+
+/////////////////////////////////////////////
+// Parser and compiler in JavaScript setup //
+/////////////////////////////////////////////
+
+let hello = String.prototype.concat (
+  //  l l e H
+  `0x6C6C6548      `,
+  //  w   , o
+  `0x77202C6F      `,
+  //  d l r o
+  `0x646C726F      `,
+  //     \n !
+  `0x00000A21      `,
+  `exit            `
+);
+
+p = p.concat (
+  // The third-order compiler, to be compiled to Intel 64 instructions by the
+  // second-order compiler in the Forth-like language
+  p.slice (0x2000, 0x4000),
+
+  // The fourth-order compiler
+  p.slice (0x2000, 0x4000),
+
+  // The final "Hello, world!" program
+  hello, ` `.repeat (0x1FF0 - hello.length), `\x00`.repeat (0x10),
+  `\x00`.repeat (0x2000)
+);
+
+let a = ``;
+let pc = 0x2000;
+
+///////////////////////////////////////
+// Parser and compiler in JavaScript //
+///////////////////////////////////////
+
+let words = String.prototype.concat (
+  `"dup "          `, `_dup            `, `\x00`.repeat (0xE0),
+  `"drop"          `, `_drop           `, `\x00`.repeat (0xE0),
+  `"over"          `, `_over           `, `\x00`.repeat (0xE0),
+  `"push"          `, `_push           `, `\x00`.repeat (0xE0),
+  `"pop "          `, `_pop            `, `\x00`.repeat (0xE0),
+  `"jz  "          `, `_jz             `, `\x00`.repeat (0xE0),
+  `"jnz "          `, `_jnz            `, `\x00`.repeat (0xE0),
+  `"jump"          `, `_jump           `, `\x00`.repeat (0xE0),
+  `"add "          `, `_add            `, `\x00`.repeat (0xE0),
+  `"2*  "          `, `_shl            `, `\x00`.repeat (0xE0),
+  `"2/  "          `, `_shr            `, `\x00`.repeat (0xE0),
+  `"or  "          `, `_or             `, `\x00`.repeat (0xE0),
+  `"and "          `, `_and            `, `\x00`.repeat (0xE0),
+  `"@   "          `, `_ftch           `, `\x00`.repeat (0xE0),
+  `"exit"          `, `_exit           `, `\x00`.repeat (0xE0),
+);
+
+let whitespace = (function ()
+{
+  let j = 0x10;
+  do {
+    j--;
+    let x = p.getUint32 (pc) & 0xFF;
+    if (x ^ 0x20) {
+      return;
+    }
+    pc++;
+  } while (j !== 0);
+  a = `\x00\x00\x00\x00`.repeat (4).concat (a);
+});
+
+let number = (function ()
+{
+  pc += 2;
+  let acc = 0;
+  let j   = 8;
+  do {
+    j--;
+    acc <<= 4;
+    let x = p.getUint32 (pc) & 0xFF;
+    pc += 1;
+    let y = x & 0xF;
+    if (x & 0x40) {
+      y += 0x09;
+    }
+    acc ^= y;
+  } while (j !== 0);
+  a = _ftchP.slice (0, 4).concat (a);
+  a = _ftchP.slice (4, 8).concat (a);
+  a = _ftchP.slice (8, 0xC).concat (a);
+  a = String.fromUint32 (acc).concat (a);
+});
+
+let word = (function ()
+{
+  let j = 1;
+  do {
+    let x = words.getUint32 (j);
+    let y = p.getUint32 (pc);
+    if (x ^ y) {
+      j += 0x100;
+      continue;
+    }
+    break;
+  } while (true);
+  pc += 4;
+  j += 0xF;
+  let w = eval (words.slice (j, j + 0x10));
+  a = w.slice (0, 4).concat (a);
+  a = w.slice (4, 8).concat (a);
+  a = w.slice (8, 0xC).concat (a);
+  a = w.slice (0xC).concat (a);
+});
+
+let load = (function (ys, n)
+{
+  let j = 0;
+  n >>= 2;
+  do {
+    n--;
+    let x = ys.getUint32 (j);
+    j += 4;
+    a = String.fromUint32 (x).concat (a);
+  } while (n !== 0);
+});
+
+load (p, 0x64);
+let p_filesz = a.getUint32 (0);
+load (p.slice (0x64), 0x1F9C);
+
+do {
+  let x = p.getUint32 (pc) & 0xFF;
+  if ((x ^ 0x20) === 0) {
+    whitespace ();
+    continue;
+  }
+  x = p.getUint32 (pc) & 0xFF;
+  if ((x ^ 0x30) === 0) {
+    number ();
+    continue;
+  }
+  x = p.getUint32 (pc) & 0xFF;
+  if ((x ^ 0x22) === 0) {
+    load (p.slice (pc), 0x10);
+    pc += 0x10;
+    continue;
+  }
+  x = p.getUint32 (pc);
+  if (x) {
+    word ();
+    continue;
+  }
+  pc += 0x10;
+  a = `\x00\x00\x00\x00`.repeat (4).concat (a);
+  p_filesz -= 0x4000;
+  if (p_filesz !== 0) {
+    load (p.slice (pc), p_filesz);
+  }
+  break;
+} while (true);
+
+let acc = ``;
+a = a.slice (0, 4).concat (a);
+let i = a.length - 4;
+while (i > 0) {
+  acc = acc.concat (a.slice (i, i + 4));
+  i -= 4;
+}
+document.location = `data:application/octet-stream;base64,${btoa (acc)}`;
+</script></body></html>
