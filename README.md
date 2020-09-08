@@ -1,11 +1,14 @@
-# Forth-like compiler and interpreter exercise
+# Toy Forth-like compiler and interpreter
 
-## Examples
+Toy compiler ([*fc.html*](fc.html)) and interpreter ([*fi.html*](fi.html)) for a
+small Forth-like language
+
+## Language examples
 
 ### Decrement five down to zero in a loop
 
-Pretending that the compiled output for this code starts at virtual memory
-address 0x00000000:
+Pretend that the compiled output for this code starts at virtual memory address
+0x00000000.
 
 ```
 0x00000005      0xFFFFFFFF      add             dup             0x00000010      jnz             exit            
@@ -137,8 +140,8 @@ Hello, world!
     files and a Forth-like language implemented on top of that
 
 [colorForth]: https://web.archive.org/web/20160128005226/http://www.colorforth.com/inst.htm
-[fc]: ../../raw/master/fc.html
-[fi]: ../../raw/master/fi.html
+[fc]: ../../raw/main/fc.html
+[fi]: ../../raw/main/fi.html
 [second-commit]: ../../commit/0bdab6d0af4910b1cb96fefc8b1b3601f32c8d76
 [mono-interpreter]: https://www.mono-project.com/news/2017/11/13/mono-interpreter/
 [turing]: https://doi.org/10.1112%2Fplms%2Fs2-42.1.230
